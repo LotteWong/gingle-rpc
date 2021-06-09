@@ -16,6 +16,11 @@ type Option struct {
 	CodecType   string
 }
 
+var DefaultOption *Option = &Option{
+	MagicNumber: MagicNumber,
+	CodecType:   GobType,
+}
+
 // Header includes service method, sequence number and error
 type Header struct {
 	ServiceMethod  string
