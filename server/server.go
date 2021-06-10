@@ -4,19 +4,69 @@ import (
 	"encoding/json"
 	"fmt"
 	"gingle-rpc/codec"
+	"gingle-rpc/service"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
-// Server includes nothing
-type Server struct{}
+// Call includes header, service, method, args and reply
+type Call struct {
+	Header *codec.Header
+
+	Service   *service.Service
+	RpcMethod *service.RpcMethod
+
+	Args  reflect.Value
+	Reply reflect.Value
+}
+
+// Server includes services
+type Server struct {
+	services sync.Map
+}
 
 // NewServer is to create server
 func NewServer() *Server {
 	return &Server{}
+}
+
+// RegisterService is to register service to server map
+func (s *Server) RegisterService(instance interface{}) error {
+	service := service.NewService(instance)
+	if _, ok := s.services.LoadOrStore(service.Name, service); ok {
+		return fmt.Errorf("server: service %s already defined", service.Name)
+	}
+	return nil
+}
+
+// RetrieveService is to retrieve service from server map
+func (s *Server) RetrieveService(serviceMethod string) (svc *service.Service, rpcMethod *service.RpcMethod, err error) {
+	dot := strings.LastIndex(serviceMethod, ".")
+	if dot < 0 {
+		err = fmt.Errorf("server: service.method %s format not correct", serviceMethod)
+		return
+	}
+
+	serviceName := serviceMethod[:dot]
+	svcInterface, ok := s.services.Load(serviceName)
+	if !ok {
+		err = fmt.Errorf("server: service.method %s service not found", serviceMethod)
+		return
+	}
+	svc = svcInterface.(*service.Service)
+
+	methodName := serviceMethod[dot+1:]
+	rpcMethod, ok = svc.RpcMethods[methodName]
+	if !ok {
+		err = fmt.Errorf("server: service.method %s method not found", serviceMethod)
+		return
+	}
+
+	return
 }
 
 // Accept is to listen and serve client connection
@@ -60,36 +110,36 @@ func (s *Server) serveCodec(cc codec.Codec) {
 
 	wg := new(sync.WaitGroup)
 	for {
-		req, err := s.readRequest(cc)
+		call, err := s.readRequest(cc)
 		if err != nil {
-			if req == nil {
+			if call == nil {
 				break
 			}
 
-			req.header.Error = err.Error()
-			s.sendResponse(cc, req.header, struct{}{}, mu)
+			call.Header.Error = err.Error()
+			s.sendResponse(cc, call.Header, struct{}{}, mu)
 			continue
 		}
 
 		wg.Add(1)
-		go s.serveHandler(cc, req, mu, wg)
+		go s.serveHandler(cc, call, mu, wg)
 	}
 	wg.Wait()
 
 	_ = cc.Close()
 }
 
-func (s *Server) serveHandler(cc codec.Codec, d *Dto, mu *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) serveHandler(cc codec.Codec, call *Call, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	d.reply = reflect.ValueOf(fmt.Sprintf("%d", d.header.SequenceNumber))
-	s.sendResponse(cc, d.header, d.reply, mu)
-}
+	err := call.Service.CallMethod(call.RpcMethod, call.Args, call.Reply)
+	if err != nil {
+		call.Header.Error = err.Error()
+		s.sendResponse(cc, call.Header, struct{}{}, mu)
+		return
+	}
 
-type Dto struct {
-	header *codec.Header
-	args   reflect.Value
-	reply  reflect.Value
+	s.sendResponse(cc, call.Header, call.Reply, mu)
 }
 
 func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
@@ -105,33 +155,42 @@ func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
 	return header, nil
 }
 
-func (s *Server) readRequestBody(cc codec.Codec) (*reflect.Value, error) {
-	body := reflect.New(reflect.TypeOf(""))
-
-	if err := cc.ReadBody(body.Interface()); err != nil {
+func (s *Server) readRequestBody(cc codec.Codec, body interface{}) error {
+	if err := cc.ReadBody(body); err != nil {
 		log.Printf("server: failed to read request body, err: %v\n", err)
-		return nil, err
+		return err
 	}
 
-	return &body, nil
+	return nil
 }
 
-func (s *Server) readRequest(cc codec.Codec) (*Dto, error) {
-	req := &Dto{}
+func (s *Server) readRequest(cc codec.Codec) (*Call, error) {
+	var err error
+	call := &Call{}
 
 	header, err := s.readRequestHeader(cc)
 	if err != nil {
 		return nil, err
 	}
-	req.header = header
+	call.Header = header
 
-	body, err := s.readRequestBody(cc)
+	call.Service, call.RpcMethod, err = s.RetrieveService(call.Header.ServiceMethod)
 	if err != nil {
-		return nil, err
+		return call, err
 	}
-	req.args = *body
+	call.Args = call.RpcMethod.NewArgsValue()
+	call.Reply = call.RpcMethod.NewReplyValue()
 
-	return req, nil
+	argsInterface := call.Args.Interface()
+	if call.Args.Type().Kind() != reflect.Ptr {
+		argsInterface = call.Args.Addr().Interface()
+	}
+	err = s.readRequestBody(cc, argsInterface)
+	if err != nil {
+		return call, err
+	}
+
+	return call, nil
 }
 
 func (s *Server) sendResponse(cc codec.Codec, header *codec.Header, body codec.Body, mu *sync.Mutex) {

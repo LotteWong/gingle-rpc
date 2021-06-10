@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"gingle-rpc/client"
 	"gingle-rpc/server"
 	"log"
@@ -10,9 +9,31 @@ import (
 	"time"
 )
 
+// Service Method Part
+
+type Foo int
+
+type Args struct {
+	Num1 int
+	Num2 int
+}
+
+func (f *Foo) Sum(args Args, reply *int) error {
+	*reply = args.Num1 + args.Num2
+	return nil
+}
+
+// Rpc Server Part
+
 var DefaultServer *server.Server = server.NewServer()
 
 func StartServer(addr chan string) {
+	var foo Foo
+	if err := DefaultServer.RegisterService(&foo); err != nil {
+		log.Fatalf("register service error: %v\n", err)
+	}
+	log.Printf("register service succeed: %v\n", foo)
+
 	lis, err := net.Listen("tcp", ":0")
 	if err != nil {
 		log.Fatalf("start server error: %v\n", err)
@@ -23,14 +44,18 @@ func StartServer(addr chan string) {
 	DefaultServer.Accept(lis)
 }
 
+// Rpc Client Part
+
 func ClientCall(i int, conn *client.Client) {
-	args := fmt.Sprintf("%d", i)
-	reply := ""
+	args := &Args{Num1: i, Num2: i * i}
+	reply := 0
 	if err := conn.Call("Foo.Sum", args, &reply); err != nil {
 		log.Fatalf("client call error: %v\n", err)
 	}
-	log.Printf("req: %s, res: %s \n", args, reply)
+	log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 }
+
+// Main Demo Part
 
 func main() {
 	log.SetFlags(0)
