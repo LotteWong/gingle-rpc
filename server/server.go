@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Call includes header, service, method, args and reply
@@ -102,10 +103,10 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 		return
 	}
 
-	s.serveCodec(fc(conn))
+	s.serveCodec(fc(conn), &opt)
 }
 
-func (s *Server) serveCodec(cc codec.Codec) {
+func (s *Server) serveCodec(cc codec.Codec, opt *codec.Option) {
 	mu := new(sync.Mutex)
 
 	wg := new(sync.WaitGroup)
@@ -122,24 +123,45 @@ func (s *Server) serveCodec(cc codec.Codec) {
 		}
 
 		wg.Add(1)
-		go s.serveHandler(cc, call, mu, wg)
+		go s.serveHandler(cc, opt, call, mu, wg)
 	}
 	wg.Wait()
 
 	_ = cc.Close()
 }
 
-func (s *Server) serveHandler(cc codec.Codec, call *Call, mu *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) serveHandler(cc codec.Codec, opt *codec.Option, call *Call, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	err := call.Service.CallMethod(call.RpcMethod, call.Args, call.Reply)
-	if err != nil {
-		call.Header.Error = err.Error()
-		s.sendResponse(cc, call.Header, struct{}{}, mu)
+	callMethodChan := make(chan struct{})
+	sendResponseChan := make(chan struct{})
+
+	go func() {
+		err := call.Service.CallMethod(call.RpcMethod, call.Args, call.Reply)
+		callMethodChan <- struct{}{}
+		if err != nil {
+			call.Header.Error = err.Error()
+			s.sendResponse(cc, call.Header, struct{}{}, mu)
+			sendResponseChan <- struct{}{}
+			return
+		}
+		s.sendResponse(cc, call.Header, call.Reply, mu)
+		sendResponseChan <- struct{}{}
+	}()
+
+	// handle server timeout for handle by defined option
+	if opt.HandleTimeout == 0 {
+		<-callMethodChan
+		<-sendResponseChan
 		return
 	}
-
-	s.sendResponse(cc, call.Header, call.Reply, mu)
+	select {
+	case <-time.After(opt.HandleTimeout):
+		call.Header.Error = fmt.Sprintf("server: failed to handle, err: handle timeout expected within %s", opt.HandleTimeout)
+		s.sendResponse(cc, call.Header, struct{}{}, mu)
+	case <-callMethodChan:
+		<-sendResponseChan
+	}
 }
 
 func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {

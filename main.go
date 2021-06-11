@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"gingle-rpc/client"
 	"gingle-rpc/server"
 	"log"
@@ -47,9 +48,10 @@ func StartServer(addr chan string) {
 // Rpc Client Part
 
 func ClientCall(i int, conn *client.Client) {
+	ctx, _ := context.WithTimeout(context.Background(), time.Second)
 	args := &Args{Num1: i, Num2: i * i}
 	reply := 0
-	if err := conn.Call("Foo.Sum", args, &reply); err != nil {
+	if err := conn.Call(ctx, "Foo.Sum", args, &reply); err != nil {
 		log.Fatalf("client call error: %v\n", err)
 	}
 	log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)

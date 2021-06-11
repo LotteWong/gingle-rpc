@@ -1,6 +1,9 @@
 package codec
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // | Option{MagicNumber: xxx, CodecType: xxx} | Header{ServiceMethod: xxx, SequenceNumber: xxx, Error: xxx} | Body interface{} |
 // | <-------     固定 JSON 编码     -------> | <-------                 编码方式由 CodecType 来决定                   -------> |
@@ -12,13 +15,16 @@ const MagicNumber = 0x3bef5c
 
 // Option includes magic number and codec type
 type Option struct {
-	MagicNumber int
-	CodecType   string
+	MagicNumber    int
+	CodecType      string
+	ConnectTimeout time.Duration
+	HandleTimeout  time.Duration
 }
 
 var DefaultOption *Option = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   GobType,
+	MagicNumber:    MagicNumber,
+	CodecType:      GobType,
+	ConnectTimeout: 10 * time.Second,
 }
 
 // Header includes service method, sequence number and error

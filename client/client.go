@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gingle-rpc/codec"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Call includes service method, sequence number, args, reply, error and done
@@ -44,6 +46,9 @@ type Client struct {
 }
 
 var _ io.Closer = (*Client)(nil)
+
+// NewClientFunc is to create client with connection and option
+type NewClientFunc func(net.Conn, *codec.Option) (*Client, error)
 
 // NewClient is to create client
 func NewClient(conn net.Conn, opt *codec.Option) (*Client, error) {
@@ -111,9 +116,16 @@ func (c *Client) Go(serviceMethod string, args, reply interface{}, done chan *Ca
 }
 
 // Call is to invoke the named function and wait for it to complete
-func (c *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := <-c.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	// handle client timeout for call by customed context
+	call := c.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done():
+		c.cancelCall(call.SequenceNumber)
+		return fmt.Errorf("client: failed to call, err: %v", ctx.Err())
+	case call := <-call.Done:
+		return call.Error
+	}
 }
 
 func (c *Client) registerCall(call *Call) (uint64, error) {
@@ -211,6 +223,11 @@ func (c *Client) receive() {
 	}
 }
 
+type clientChanItem struct {
+	client *Client
+	err    error
+}
+
 func parseOptions(opts ...*codec.Option) (*codec.Option, error) {
 	if len(opts) == 0 || opts[0] == nil {
 		return codec.DefaultOption, nil
@@ -227,22 +244,43 @@ func parseOptions(opts ...*codec.Option) (*codec.Option, error) {
 	return opt, nil
 }
 
-// Dial is to connect the server and parse options
-func Dial(network, address string, opts ...*codec.Option) (client *Client, err error) {
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-
+func dialTimeout(fn NewClientFunc, network, address string, opts ...*codec.Option) (client *Client, err error) {
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
 
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		if err != nil {
 			_ = conn.Close()
 		}
 	}()
-	return NewClient(conn, opt)
+
+	ch := make(chan clientChanItem)
+	go func() {
+		client, err = fn(conn, opt)
+		ch <- clientChanItem{client: client, err: err}
+	}()
+
+	// handle client timeout for connect by defined option
+	var item clientChanItem
+	if opt.ConnectTimeout == 0 {
+		item = <-ch
+		return item.client, item.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("client: failed to dail, err: connect timeout expected within %s", opt.ConnectTimeout)
+	case item = <-ch:
+		return item.client, item.err
+	}
+}
+
+// Dial is to connect the server and parse options
+func Dial(network, address string, opts ...*codec.Option) (client *Client, err error) {
+	return dialTimeout(NewClient, network, address, opts...)
 }
