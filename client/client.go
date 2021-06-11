@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,15 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	defaultHandlePath = "/gingle/handle"
+	defaultDebugPath  = "/gingle/debug"
 )
 
 // Call includes service method, sequence number, args, reply, error and done
@@ -50,8 +58,8 @@ var _ io.Closer = (*Client)(nil)
 // NewClientFunc is to create client with connection and option
 type NewClientFunc func(net.Conn, *codec.Option) (*Client, error)
 
-// NewClient is to create client
-func NewClient(conn net.Conn, opt *codec.Option) (*Client, error) {
+// NewRPCClient is to create rpc client
+func NewRPCClient(conn net.Conn, opt *codec.Option) (*Client, error) {
 	fn := codec.NewCodecFuncMap[opt.CodecType]
 	if fn == nil {
 		errMsg := "client: failed to generate codec func"
@@ -74,6 +82,21 @@ func NewClient(conn net.Conn, opt *codec.Option) (*Client, error) {
 	go client.receive()
 
 	return client, nil
+}
+
+// NewHTTPClient is to create http client
+func NewHTTPClient(conn net.Conn, opt *codec.Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultHandlePath))
+
+	res, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && res.Status == "200 Connected to Gingle RPC" {
+		return NewRPCClient(conn, opt)
+	}
+
+	if err == nil {
+		err = fmt.Errorf("client: failed to new http client, err: unexpected http response")
+	}
+	return nil, err
 }
 
 // IsAvailable is to check whether client works
@@ -280,7 +303,28 @@ func dialTimeout(fn NewClientFunc, network, address string, opts ...*codec.Optio
 	}
 }
 
-// Dial is to connect the server and parse options
-func Dial(network, address string, opts ...*codec.Option) (client *Client, err error) {
-	return dialTimeout(NewClient, network, address, opts...)
+// DialRPC is to connect the rpc server and parse options
+func DialRPC(network, address string, opts ...*codec.Option) (client *Client, err error) {
+	return dialTimeout(NewRPCClient, network, address, opts...)
+}
+
+// DialHTTP is to connect the http server and parse options
+func DialHTTP(network, address string, opts ...*codec.Option) (client *Client, err error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+// Dial is to choose to access http protocol or rpc protocol
+func Dial(pattern string, opts ...*codec.Option) (client *Client, err error) {
+	pair := strings.Split(pattern, "@")
+	if len(pair) != 2 {
+		return nil, fmt.Errorf("client: failed to dail, err: dial pattern %s format not correct", pattern)
+	}
+
+	protocol, address := pair[0], pair[1]
+	switch protocol {
+	case "http": // http ->
+		return DialHTTP("tcp", address, opts...)
+	default: // rpc -> tcp or unix
+		return DialRPC(protocol, address, opts...)
+	}
 }

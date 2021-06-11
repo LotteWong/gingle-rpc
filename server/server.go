@@ -8,10 +8,16 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	defaultHandlePath = "/gingle/handle"
+	defaultDebugPath  = "/gingle/debug"
 )
 
 // Call includes header, service, method, args and reply
@@ -27,7 +33,7 @@ type Call struct {
 
 // Server includes services
 type Server struct {
-	services sync.Map
+	Services sync.Map
 }
 
 // NewServer is to create server
@@ -38,7 +44,7 @@ func NewServer() *Server {
 // RegisterService is to register service to server map
 func (s *Server) RegisterService(instance interface{}) error {
 	service := service.NewService(instance)
-	if _, ok := s.services.LoadOrStore(service.Name, service); ok {
+	if _, ok := s.Services.LoadOrStore(service.Name, service); ok {
 		return fmt.Errorf("server: service %s already defined", service.Name)
 	}
 	return nil
@@ -53,7 +59,7 @@ func (s *Server) RetrieveService(serviceMethod string) (svc *service.Service, rp
 	}
 
 	serviceName := serviceMethod[:dot]
-	svcInterface, ok := s.services.Load(serviceName)
+	svcInterface, ok := s.Services.Load(serviceName)
 	if !ok {
 		err = fmt.Errorf("server: service.method %s service not found", serviceMethod)
 		return
@@ -79,6 +85,33 @@ func (s *Server) Accept(lis net.Listener) {
 		}
 		go s.ServeConn(conn)
 	}
+}
+
+// ServeHTTP is to exchange http to rpc protocol
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "CONNECT" {
+		w.Header().Set("Context-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(w, "405 Must Connect\n")
+		return
+	}
+
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		w.Header().Set("Context-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "500 Hijack Connection Failed\n")
+		return
+	}
+
+	_, _ = io.WriteString(w, "HTTP/1.0 200 Connected to Gingle RPC\n\n")
+	s.ServeConn(conn)
+}
+
+// HandleHTTP is to register http handlers
+func (s *Server) HandleHTTP() {
+	http.Handle(defaultHandlePath, s)
+	http.Handle(defaultDebugPath, &DebugServer{Server: s})
 }
 
 // ServeConn is to parse option, choose a codec func and serve codec

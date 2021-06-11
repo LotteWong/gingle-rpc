@@ -6,6 +6,7 @@ import (
 	"gingle-rpc/server"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -35,17 +36,35 @@ func StartServer(addr chan string) {
 	}
 	log.Printf("register service succeed: %v\n", foo)
 
-	lis, err := net.Listen("tcp", ":0")
+	lis, err := net.Listen("tcp", ":9999")
 	if err != nil {
 		log.Fatalf("start server error: %v\n", err)
 	}
 	log.Printf("start server succeed: %s\n", lis.Addr().String())
-	addr <- lis.Addr().String()
 
-	DefaultServer.Accept(lis)
+	DefaultServer.HandleHTTP()
+	addr <- lis.Addr().String()
+	http.Serve(lis, nil)
 }
 
 // Rpc Client Part
+
+func StartClient(addr chan string) {
+	conn, _ := client.DialHTTP("tcp", <-addr)
+	defer func() { _ = conn.Close() }()
+
+	time.Sleep(time.Second)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ClientCall(i, conn)
+		}(i)
+	}
+	wg.Wait()
+}
 
 func ClientCall(i int, conn *client.Client) {
 	ctx, _ := context.WithTimeout(context.Background(), time.Second)
@@ -63,18 +82,6 @@ func main() {
 	log.SetFlags(0)
 	addr := make(chan string)
 
-	go StartServer(addr)
-	conn, _ := client.Dial("tcp", <-addr)
-	defer func() { _ = conn.Close() }()
-
-	time.Sleep(time.Second)
-
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			ClientCall(i, conn)
-		}(i)
-	}
+	go StartClient(addr)
+	StartServer(addr)
 }
