@@ -313,8 +313,8 @@ func DialHTTP(network, address string, opts ...*codec.Option) (client *Client, e
 	return dialTimeout(NewHTTPClient, network, address, opts...)
 }
 
-// Dial is to choose to access http protocol or rpc protocol
-func Dial(pattern string, opts ...*codec.Option) (client *Client, err error) {
+// XDial is to choose to access http protocol or rpc protocol
+func XDial(pattern string, opts ...*codec.Option) (client *Client, err error) {
 	pair := strings.Split(pattern, "@")
 	if len(pair) != 2 {
 		return nil, fmt.Errorf("client: failed to dail, err: dial pattern %s format not correct", pattern)
