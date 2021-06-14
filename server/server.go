@@ -16,8 +16,12 @@ import (
 )
 
 const (
-	defaultHandlePath = "/gingle/handle"
-	defaultDebugPath  = "/gingle/debug"
+	defaultHandlePath   = "/gingle/handle"
+	defaultDebugPath    = "/gingle/debug"
+	defaultRegistryPath = "/gingle/registry"
+
+	defaultTimeout = 5 * time.Minute
+	defaultPeriod  = 3 * time.Minute
 )
 
 // Call includes header, service, method, args and reply
@@ -112,6 +116,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandleHTTP() {
 	http.Handle(defaultHandlePath, s)
 	http.Handle(defaultDebugPath, &DebugServer{Server: s})
+	http.Handle(defaultRegistryPath, NewRegistryServer(defaultTimeout))
 }
 
 // ServeConn is to parse option, choose a codec func and serve codec

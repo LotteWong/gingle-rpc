@@ -30,7 +30,7 @@ func (f *Foo) Sum(args Args, reply *int) error {
 
 var DefaultServer *server.Server = server.NewServer()
 
-func StartServer(addr chan string) {
+func StartServer(addr chan string, registryAddr string) {
 	var foo Foo
 	if err := DefaultServer.RegisterService(&foo); err != nil {
 		log.Fatalf("register service error: %v\n", err)
@@ -45,6 +45,7 @@ func StartServer(addr chan string) {
 
 	DefaultServer.HandleHTTP()
 	addr <- lis.Addr().String()
+	server.HealthCheckPeriodically(registryAddr, "tcp@"+lis.Addr().String(), 0)
 	http.Serve(lis, nil)
 }
 
@@ -78,8 +79,8 @@ func ClientCall(i int, conn *client.Client) {
 	log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 }
 
-func StartXClientByPeerToPeer(servers []string) {
-	lb := loadbalance.NewLoadBalanceWithClientDiscovery(servers)
+func StartXClientByPeerToPeer(registryAddr string) {
+	lb := loadbalance.NewLoadBalanceWithServerDiscovery(registryAddr, 0)
 	xc := client.NewXClient(lb, loadbalance.Random, nil)
 	defer func() { _ = xc.Close() }()
 
@@ -96,8 +97,8 @@ func StartXClientByPeerToPeer(servers []string) {
 	wg.Wait()
 }
 
-func StartXClientByBroadcast(servers []string) {
-	lb := loadbalance.NewLoadBalanceWithClientDiscovery(servers)
+func StartXClientByBroadcast(registryAddr string) {
+	lb := loadbalance.NewLoadBalanceWithServerDiscovery(registryAddr, 0)
 	xc := client.NewXClient(lb, loadbalance.Random, nil)
 	defer func() { _ = xc.Close() }()
 
@@ -139,17 +140,16 @@ func XClientCall(xType string, xc *client.XClient, i int) {
 
 func main() {
 	log.SetFlags(0)
+	registryAddr := "http://localhost:9999/gingle/registry"
 
 	addr := make(chan string)
 	go StartClient(addr)
-	StartServer(addr)
+	StartServer(addr, registryAddr)
 
 	ch1 := make(chan string)
 	ch2 := make(chan string)
-	go StartServer(ch1)
-	go StartServer(ch2)
-	addr1 := <-ch1
-	addr2 := <-ch2
-	StartXClientByPeerToPeer([]string{addr1, addr2})
-	StartXClientByBroadcast([]string{addr1, addr2})
+	go StartServer(ch1, registryAddr)
+	go StartServer(ch2, registryAddr)
+	StartXClientByPeerToPeer(registryAddr)
+	StartXClientByBroadcast(registryAddr)
 }
